@@ -30,16 +30,18 @@ attempt_extensions_of_existing_runs = True
 
 accel_factors = (2., 5., 10., 20.)
 
-uplift_rates = (0.0001, )# 0.00025, 0.0005, 0.001)
+uplift_rates = (0.00001, 0.0001, 0.00025, 0.0005, 0.001)
+#uplift_rates = (0.0001, 0.0005, )
 
-max_loops = 6000
-multiplierforstab = 3
+max_loops = 10000
+multiplierforstab = 4
 
 raster_params = {'shape': (50, 50), 'dx': 200.,
                  'initcond': 'initcondst5000.txt'}
 
 inputs_sde = {'K_sp': 1.e-5, 'sed_dependency_type': 'almost_parabolic',
-              'Qc': 'power_law', 'K_t': 1.e-5}
+              'Qc': 'power_law', 'K_t': 1.e-5}  # , 'm_sp': 0.5, 'n_sp': 1.,
+#              'm_t': 1.5, 'n_t': 1.}
 inputs_ld = {'linear_diffusivity': 1.e-2}
 
 dt = 200.  # was 100.
@@ -62,6 +64,7 @@ for edge in (mg.nodes_at_left_edge, mg.nodes_at_top_edge,
 
 z = mg.add_field('node', 'topographic__elevation',
                  np.loadtxt(raster_params['initcond']))
+sed = mg.add_zeros('node', 'channel_sediment__depth', dtype=float)
 
 fr = FlowRouter(mg)
 eroder = SedDepEroder(mg, **inputs_sde)
@@ -174,6 +177,7 @@ def run_fresh_perturbations():
     these equilibria by changing uplift rate by given fractions. These
     perturbation runs will always be "fresh".
     """
+    global z, sed, allow_init_from_existing_file
     expt_ID, total_dict = make_expt_folder_and_store_master_dict()
     for uplift_rate in uplift_rates:
         time_to_stab = multiplierforstab * max_loops * dt
@@ -182,8 +186,11 @@ def run_fresh_perturbations():
         # note this should never exist, as we're inside our ID'd folder
         # look for some existing data, if desired:
         if allow_init_from_existing_file:
-            initfile, equib_time = search_for_starting_file(
-                total_dict, uplift_rate, directory='.')
+            try:
+                initfile, equib_time = search_for_starting_file(
+                    total_dict, uplift_rate, directory='.')
+            except KeyError:
+                initfile = None
         else:
             initfile = None
         if initfile is None:
@@ -192,9 +199,17 @@ def run_fresh_perturbations():
             run_ID = int(time.time())
             # this is a baseline run, so extend the time for run:
             for i in xrange(multiplierforstab*max_loops):
+                z_pre = z.copy()
                 fr.route_flow()
-                eroder.run_one_step(dt)
                 ld.run_one_step(dt)
+                # now work out where the loose sed is:
+                loose_sed = (z - z_pre).clip(0.)
+                BR_surface = np.isclose(loose_sed, 0.)
+                # topo is BR topo, so:
+                z -= loose_sed
+                sed[BR_surface] = 0.
+                sed[:] += loose_sed
+                eroder.run_one_step(dt)
                 z[mg.core_nodes] += accel_factor * uplift_rate * dt
                 print(i)
                 if i % (out_interval * multiplierforstab) == 0:
@@ -236,8 +251,8 @@ def run_fresh_perturbations():
             os.mkdir(path_to_data)
             for i in xrange(max_loops):
                 fr.route_flow()
-                eroder.run_one_step(dt)
                 ld.run_one_step(dt)
+                eroder.run_one_step(dt)
                 z[mg.core_nodes] += accel_factor * uplift_rate * dt
                 print(i)
                 if i % out_interval == 0:
