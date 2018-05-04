@@ -29,34 +29,28 @@ attempt_extensions_of_existing_runs = True
 # of out_interval (must be a factor) and max_loops, then makes new runs that
 # harvest existing data from these and extend the runtimes as specified.
 
-# accel_factors = (10., 20.)
-accel_factors = (1.2, 1.5, 2., 3., 5., 7., 10., 15.,  20.)
+accel_factors = (5., 10., 20.)
 
-uplift_rates = (0.00001, 0.0001, 0.00025, 0.0005, 0.001)
-# uplift_rates = (0.0001, )
+#uplift_rates = (0.00001, 0.0001, 0.00025, 0.0005, 0.001)
+uplift_rates = (0.0005, )
 
-max_loops = 160000  # Try 10000 for K = 1.e-5, & adj out_interval (25 for 1e-5)
-multiplierforstab = 3
+max_loops = 10000
+multiplierforstab = 4
 
 raster_params = {'shape': (50, 50), 'dx': 200.,
                  'initcond': 'initcondst5000.txt'}
 
-inputs_sde = {'K_sp': 5.e-6, 'sed_dependency_type': 'almost_parabolic',
-              'Qc': 'power_law', 'K_t': 5.e-6, 'forbid_deposition': True}  # , 'm_sp': 0.5, 'n_sp': 1.,
-#               'm_t': 1.5, 'n_t': 1.}
+inputs_sp = {'K_sp': 1.e-5, 'K_t': 1.e-5}
 inputs_ld = {'linear_diffusivity': 1.e-2}
 
 dt = 200.  # was 100.
-out_interval = 500
+out_interval = 25
 
 color = 'gnuplot2'  # 'winter'
 
 out_fields = [
         'topographic__elevation',
-        'surface_water__discharge',
-        'channel_sediment__relative_flux',
-        'channel_sediment__volumetric_flux',
-        'channel_sediment__depth']
+        'channel_sediment__volumetric_flux']
 
 # build the structures:
 mg = RasterModelGrid(raster_params['shape'], raster_params['dx'])
@@ -66,15 +60,16 @@ for edge in (mg.nodes_at_left_edge, mg.nodes_at_top_edge,
 
 z = mg.add_field('node', 'topographic__elevation',
                  np.loadtxt(raster_params['initcond']))
-sed = mg.add_zeros('node', 'channel_sediment__depth', dtype=float)
+
+sed = mg.add_zeros('node', 'channel_sediment__volumetric_flux', dtype=float)
 
 fr = FlowRouter(mg)
-eroder = SedDepEroder(mg, **inputs_sde)
+eroder = FastscapeEroder(mg, **inputs_sp)
 ld = LinearDiffuser(mg, **inputs_ld)
 
 
 def build_master_dict(expt_ID):
-    total_dict = inputs_sde.copy()
+    total_dict = inputs_sp.copy()
     total_dict.update(inputs_ld)
     total_dict.update(raster_params)
     total_dict['expt_ID'] = expt_ID
@@ -92,9 +87,7 @@ def search_for_starting_file(dict_of_all_params, uplift_rate, directory='.',
     """
     Returns a tuple of (path_to_existing_equilibrium_topo_file, run_time) or
     (None, None) if none exists. the file must have the same run conditions as
-    this run. Exceptions are the run ID, the output interval, the chosen
-    uplift rates and accel factors used in that run, and the forbid_deposition
-    flag.
+    this run.
     If more than one exists, the one with the longest total run time will be
     selected.
     If enforce_equilibrium_time, the function also checks for consistency with
@@ -112,15 +105,12 @@ def search_for_starting_file(dict_of_all_params, uplift_rate, directory='.',
             found_params = np.load(root + '/expt_ID_paramdict.npy').item()
             for key in dict_of_all_params.keys():
                 if key in ['expt_ID', 'out_interval', 'uplift_rates',
-                           'accel_factors', 'forbid_deposition']:
+                           'accel_factors']:
                     continue
                 if key in ['dt', 'multiplierforstab', 'max_loops']:
                     if not enforce_equilibrium_time:  # ignore time to =brium
                         continue
-                try:
-                    if dict_of_all_params[key] != found_params[key]:
-                        dicts_are_the_same = False
-                except KeyError:
+                if dict_of_all_params[key] != found_params[key]:
                     dicts_are_the_same = False
             if dicts_are_the_same:  # it is valid
                 # now check the uplift rate exists:
@@ -209,14 +199,17 @@ def run_fresh_perturbations():
                 z_pre = z.copy()
                 fr.route_flow()
                 ld.run_one_step(dt)
-                # now work out where the loose sed is:
-                loose_sed = (z - z_pre).clip(0.)
-                BR_surface = np.isclose(loose_sed, 0.)
-                # topo is BR topo, so:
-                z -= loose_sed
-                sed[BR_surface] = 0.
-                sed[:] += loose_sed
+
+                # flush any diffused loose sed:
+                z[:] = np.minimum(z, z_pre)
+
                 eroder.run_one_step(dt)
+
+                # measure the erosion done here; scale it as the sde has scaled
+                # it elsewhere (i.e., avg per node)
+                sed[mg.core_nodes] = (z_pre[mg.core_nodes] -
+                          z[mg.core_nodes])/mg.number_of_core_nodes
+
                 z[mg.core_nodes] += accel_factor * uplift_rate * dt
                 print(i)
                 if i % (out_interval * multiplierforstab) == 0:
@@ -257,9 +250,20 @@ def run_fresh_perturbations():
                             '/accel_' + str(accel_factor))
             os.mkdir(path_to_data)
             for i in xrange(max_loops):
+                z_pre = z.copy()
                 fr.route_flow()
                 ld.run_one_step(dt)
+
+                # flush any diffused loose sed:
+                z[:] = np.minimum(z, z_pre)
+
                 eroder.run_one_step(dt)
+
+                # measure the erosion done here; scale it as the sde has scaled
+                # it elsewhere (i.e., avg per node)
+                sed[mg.core_nodes] = (z_pre[mg.core_nodes] -
+                          z[mg.core_nodes])/mg.number_of_core_nodes
+
                 z[mg.core_nodes] += accel_factor * uplift_rate * dt
                 print(i)
                 if i % out_interval == 0:
@@ -626,31 +630,28 @@ def get_float_of_folder_name(directory='.'):
 
 
 def plot_sed_out(directory='.', step=1, dt=1., method='at_a_fixed_point',
-                 values='qs', accel_for_normalization=None):
+                 values='qs', accel_for_normalization=None, fixed_node=None):
     """
     Plot a time series of sediment discharge from the largest channel in a sim.
     Step is the frequency of sampling of savefiles.
     dt is the timestep (for correct scaling of the x axis).
 
-    method = {'at_a_fixed_point', 'max_point', 'total_out'}
-    If 'at_a_fixed_point', we take the node with max water discharge in step 0.
-    If 'max_point', we take the node with max water Q at each step.
+    method = {'at_a_fixed_point', 'total_out'}
+    If 'at_a_fixed_point', specify node with fixed_node.
     If 'total_out', we take the sum across all the nodes at the bottom edge
     (noting that this will blur the signal).
 
-    values = {'qs', 'qs/Qw', 'Qw'}
+    values = {'qs', }
     Supply the mugnitude of fault acceleration to 'accel_for_normalization' if
     values=='qs' and you want a normalization to final equilibrium to be
     applied.
     """
     assert method in {'at_a_fixed_point', 'max_point', 'total_out'}
-    assert values in {'qs', 'qs/Qw', 'Qw'}
+    assert values in {'qs', }
     mg2 = deepcopy(mg)
     z2 = mg2.add_zeros('node', 'topographic__elevation', noclobber=False)
     sedflux2 = mg2.add_zeros('node', 'channel_sediment__volumetric_flux',
                              noclobber=False)
-    waterQ2 = mg2.add_zeros('node', 'surface_water__discharge',
-                            noclobber=False)
     fr2 = FlowRouter(mg2)
     # search for topo saves, to establish the num files, codes etc:
     prefixed_z = [filename for filename in os.listdir(directory) if
@@ -677,28 +678,18 @@ def plot_sed_out(directory='.', step=1, dt=1., method='at_a_fixed_point',
     # numbering scheme. So we can just iterate though to pick up all the data
     sedqsaved = [filename for filename in os.listdir(directory) if
                  filename.startswith('channel_sediment__volumetric_flux')]
-    waterQsaved = [filename for filename in os.listdir(directory) if
-                   filename.startswith('surface_water__discharge')]
     first = True
     out_vals = []
-    for (ztxt, stxt, wtxt) in zip(prefixed_z[::step], sedqsaved[::step],
-                                  waterQsaved[::step]):
+    for (ztxt, stxt) in zip(prefixed_z[::step], sedqsaved[::step]):
         z2[:] = np.loadtxt(directory + '/' + ztxt)
         sedflux2[:] = np.loadtxt(directory + '/' + stxt)
-        waterQ2[:] = np.loadtxt(directory + '/' + wtxt)
         if values == 'qs':
             outarray = sedflux2
-        elif values == 'Qw':
-            outarray = waterQ2
-        elif values == 'qs/Qw':
-            outarray = sedflux2/waterQ2
         if method == 'at_a_fixed_point':
             if first:
-                outnode = np.argmax(waterQ2)
+                assert fixed_node is not None
+                outnode = fixed_node
                 first = False
-            out_vals.append(outarray[outnode])
-        elif method == 'max_point':
-            outnode = np.argmax(waterQ2)
             out_vals.append(outarray[outnode])
         elif method == 'total_out':
             out_vals.append(outarray[mg2.nodes_at_bottom_edge].sum())
@@ -795,4 +786,3 @@ def plot_and_calc_concavities_final_run(directory='.'):
 #     files = [f for f in files if not f[0] == '.']
 #     dirs[:] = [d for d in dirs if not d[0] == '.']
 #     print files
-##run_fresh_perturbations()
