@@ -4,9 +4,8 @@ Loads an existing landscape created as::
     sde = SedDepEroder(mg, K_sp=1.e-4, sed_dependency_type='almost_parabolic',
                        Qc='power_law', K_t=1.e-4)
 
-Then perturbs it.
+Then perturbs it via reducing the gradient of the upper reaches.
 
-This is primarily a plotter for a single magnitude of uplift perturbation.
 """
 from landlab import CLOSED_BOUNDARY, RasterModelGrid
 from landlab.components import FlowRouter, FastscapeEroder, SedDepEroder, \
@@ -29,14 +28,13 @@ attempt_extensions_of_existing_runs = True
 # of out_interval (must be a factor) and max_loops, then makes new runs that
 # harvest existing data from these and extend the runtimes as specified.
 
-# accel_factors = (10., 20.)
-accel_factors = (1.2, 1.5, 2., 3., 5., 7., 10., 15.,  20.)
+uplift_rates = (0.00001, 0.0001)
 
-uplift_rates = (0.00001, 0.0001, 0.00025, 0.0005, 0.001)
-# uplift_rates = (0.0001, )
+bevel_amounts = (0.3, 0.8)
+
+elev_fraction_to_bevel = (0.2, )
 
 max_loops = 160000  # Try 10000 for K = 1.e-5, & adj out_interval (25 for 1e-5)
-multiplierforstab = 3
 
 raster_params = {'shape': (50, 50), 'dx': 200.,
                  'initcond': 'initcondst5000.txt'}
@@ -48,6 +46,8 @@ inputs_ld = {'linear_diffusivity': 1.e-2}
 
 dt = 200.  # was 100.
 out_interval = 500
+
+multiplierforstab = 3
 
 color = 'gnuplot2'  # 'winter'
 
@@ -83,7 +83,8 @@ def build_master_dict(expt_ID):
     total_dict['multiplierforstab'] = multiplierforstab
     total_dict['out_interval'] = out_interval
     total_dict['uplift_rates'] = uplift_rates
-    total_dict['accel_factors'] = accel_factors
+    total_dict['bevel_amounts'] = bevel_amounts
+    total_dict['elev_fraction_to_bevel'] = elev_fraction_to_bevel
     return total_dict
 
 
@@ -112,7 +113,8 @@ def search_for_starting_file(dict_of_all_params, uplift_rate, directory='.',
             found_params = np.load(root + '/expt_ID_paramdict.npy').item()
             for key in dict_of_all_params.keys():
                 if key in ['expt_ID', 'out_interval', 'uplift_rates',
-                           'accel_factors', 'forbid_deposition']:
+                           'accel_factors', 'forbid_deposition',
+                           'bevel_amounts', 'elev_fraction_to_bevel']:
                     continue
                 if key in ['dt', 'multiplierforstab', 'max_loops']:
                     if not enforce_equilibrium_time:  # ignore time to =brium
@@ -153,8 +155,10 @@ def search_for_starting_file(dict_of_all_params, uplift_rate, directory='.',
     if len(paths_of_valid_starting_files) == 0:
         return (None, None)
     elif len(paths_of_valid_starting_files) == 1:
+        print('Found an initial topo to use.')
         return (paths_of_valid_starting_files[0], equivalent_timestostab[0])
     else:
+        print('Found an initial topo to use.')
         which_one_is_best = np.argmax(equivalent_timestostab)
         return (paths_of_valid_starting_files[which_one_is_best],
                 equivalent_timestostab[which_one_is_best])
@@ -200,8 +204,8 @@ def run_fresh_perturbations():
                 initfile = None
         else:
             initfile = None
+        accel_factor = 1.
         if initfile is None:
-            accel_factor = 1.
             # use time as a unique identifier:
             run_ID = int(time.time())
             # this is a baseline run, so extend the time for run:
@@ -249,44 +253,68 @@ def run_fresh_perturbations():
             outfile.write('file: ' + initfile + '\n')
             outfile.write('equilibration time (y): ' + str(equib_time))
             outfile.close()
-        for accel_factor in accel_factors:
-            z[:] = np.loadtxt(initfile)
-            # use time as a unique identifier:
-            run_ID = int(time.time())
-            path_to_data = (expt_ID + '/uplift_rate_' + str(uplift_rate) +
-                            '/accel_' + str(accel_factor))
-            os.mkdir(path_to_data)
-            for i in xrange(max_loops):
+        for bevel_amt in bevel_amounts:
+            for whr_to_bevel in elev_fraction_to_bevel:
+                z[:] = np.loadtxt(initfile)
+                # use time as a unique identifier:
+                run_ID = int(time.time())
+                path_to_data = (expt_ID + '/uplift_rate_' + str(uplift_rate) +
+                                '/bevel_' + str(bevel_amt) + '_elevfrac_' +
+                                str(whr_to_bevel))
+                os.mkdir(path_to_data)
+                # now modify that topo
+                zrange = z.max() - z.min()
+                z+=10.
+                z_flattened = (z - z.min())*bevel_amt
+                z_flatandshift = z_flattened + z.min() + zrange * whr_to_bevel
+                z[:] = np.where(z < z_flattened, z, z_flattened)
+                ###
                 fr.route_flow()
-                ld.run_one_step(dt)
-                eroder.run_one_step(dt)
-                z[mg.core_nodes] += accel_factor * uplift_rate * dt
-                print(i)
-                if i % out_interval == 0:
-                    max_zeros = len(str(max_loops))  # i.e., 2000 is 4
-                    zeros_to_add = max_zeros - len(str(i)) + 1
-                    # note an OoM buffer! Just to be safe
-                    if zeros_to_add < 0:
-                        # ...just in case, though should never happen
-                        print('Problem allocating zeros on savefiles')
-                    ilabel = '0' * zeros_to_add + str(i)
-                    identifier = ilabel + '_' + str(run_ID)
-                    for field in out_fields:
-                        np.savetxt(path_to_data + '/' + field + '_' +
-                                   identifier + '.txt', mg.at_node[field])
+                imshow_grid_at_node(mg, z)
+                draw_profile(mg)
+                mg.at_node['topographic__elevation'][:] = z_flattened
+                draw_profile(mg)
+                show()
+                ###
+
+                for i in xrange(max_loops):
+                    fr.route_flow()
+                    ld.run_one_step(dt)
+                    eroder.run_one_step(dt)
+                    z[mg.core_nodes] += uplift_rate * dt
+                    print(i)
+                    if i % out_interval == 0:
+                        max_zeros = len(str(max_loops))  # i.e., 2000 is 4
+                        zeros_to_add = max_zeros - len(str(i)) + 1
+                        # note an OoM buffer! Just to be safe
+                        if zeros_to_add < 0:
+                            # ...just in case, though should never happen
+                            print('Problem allocating zeros on savefiles')
+                        ilabel = '0' * zeros_to_add + str(i)
+                        identifier = ilabel + '_' + str(run_ID)
+                        for field in out_fields:
+                            np.savetxt(path_to_data + '/' + field + '_' +
+                                       identifier + '.txt', mg.at_node[field])
 
 
 def draw_profile(grid, figure_name='profile'):
     """Plot the current channel long profile.
     """
     figure(figure_name)
-    profile_IDs = channel_nodes(
-        grid, grid.at_node['topographic__steepest_slope'],
+    # profile_IDs = channel_nodes(
+    #     grid, grid.at_node['topographic__steepest_slope'],
+    #     grid.at_node['drainage_area'], grid.at_node['flow__receiver_node'])
+    # ch_dists = get_distances_upstream(
+    #     grid, len(grid.at_node['topographic__steepest_slope']),
+    #     profile_IDs, grid.at_node['flow__link_to_receiver_node'])
+    profile_str = channel_nodes(
+        grid, None,
         grid.at_node['drainage_area'], grid.at_node['flow__receiver_node'])
-    ch_dists = get_distances_upstream(
-        grid, len(grid.at_node['topographic__steepest_slope']),
-        profile_IDs, grid.at_node['flow__link_to_receiver_node'])
-    plot(ch_dists[0], grid.at_node['topographic__elevation'][profile_IDs[0]])
+    profile_IDs = profile_str[0][0]
+    dists_str = get_distances_upstream(
+        grid, profile_str, grid.at_node['flow__link_to_receiver_node'])
+    ch_dists = dists_str[0][0]
+    plot(ch_dists, grid.at_node['topographic__elevation'][profile_IDs])
     xlabel('Distance downstream (m)')
     ylabel('Elevation (m)')
 
@@ -376,236 +404,6 @@ def draw_profile_evolution(start, stop, step, format, directory='.',
             figure('field_values_downstream')
         xlabel('Distance downstream (m)')
         ylabel('Field value')
-
-
-def extend_equilibrium_run(uplift_rates_to_extend):
-    """******NOT TESTED******
-    Call this function to extend runs for attempts at equilibrium that didn't
-    quite make it. A new experiment is made, any useful existing data is ported
-    over from the best available old run, then runs begin from the point the
-    last experiment terminated.
-    uplift_rates_to_extend is a list of rates to extend.
-    Assumes properties are set in-line.
-    Assumes a previous run has been allowed to complete, i.e., the file
-    topographic__elevation_after_...' exists.
-    """
-    expt_ID, total_dict = make_expt_folder_and_store_master_dict()
-    for uplift_rate in uplift_rates_to_extend:
-        run_ID = int(time.time())
-        initfile, equib_time = search_for_starting_file(
-            total_dict, uplift_rate, directory='.')
-        # initfile is the topo file, with full path. We want that path.
-        if initfile is None:
-            print('No existing run found for uplift rate ' + str(uplift_rate))
-            continue  # no initfile
-        init_path, init_fname = os.path.split(initfile)
-        # grab that old paramdict again:
-        found_params = np.load(init_path + '/../expt_ID_paramdict.npy').item()
-        old_interval = found_params['out_interval']
-        if out_interval < old_interval:
-            print("U = " + str(uplift_rate) + ": New out_interval must " +
-                  "exceed previous, which was " + str(old_interval))
-            continue
-        multiples = out_interval // old_interval
-        if not out_interval % old_interval == 0:
-            print("U = " + str(uplift_rate) + ": New out_interval must be " +
-                  "an integer multiple of old out_interval, which was " +
-                  str(old_interval))
-            continue
-        old_iters = found_params[max_loops]
-        if old_iters >= max_loops:
-            print("U = " + str(uplift_rate) + ": old run is longer than new!")
-            continue
-        # now, copy over that sweet sweet data:
-        newdir = expt_ID + '/uplift_rate_' + str(uplift_rate)
-        os.mkdir(newdir)
-        old_numchars = len(str(old_iters)) + 1
-        new_numchars = len(str(max_loops)) + 1
-        for field in out_fields:
-            for j in xrange(0, old_iters, multiples):
-                old_num_zeros = old_numchars - len(str(i))
-                new_num_zeros = new_numchars - len(str(i))
-                fname_list = [f for f in os.listdir(init_path) if f.startswith(
-                    field + '_' + '0'*old_num_zeros + str(j) + '_')]
-                assert len(fname_list) == 1
-                copyfile(init_path + '/' + fname_list[0],
-                         newdir + '/' + field + '_' + '0'*new_num_zeros +
-                         str(j) + '_' + str(run_ID) + '.txt')
-        # add a note that we've copied these:
-        outfile = open(newdir + '/copied_data_readme.txt', 'w')
-        outfile.write('Some files in this folder were copied from an older ' +
-                      'run.')
-        outfile.write('The files were copied from ' + init_path)
-        outfile.write('The maximum iteration that is a copy is ' +
-                      str(old_iters))
-        outfile.close()
-        # now, note the current value of j is the last good file ID, so:
-        mg.at_node['topographic__elevation'][:] = np.loadtxt(
-            newdir + '/topographic__elevation_' + '0'*new_num_zeros + str(j) +
-            '_' + str(run_ID) + '.txt')
-        path_to_data = newdir
-        for i in xrange(j, max_loops):
-            fr.route_flow()
-            eroder.run_one_step(dt)
-            ld.run_one_step(dt)
-            z[mg.core_nodes] += uplift_rate * dt
-            print(i)
-            if i % out_interval == 0 and i != j:
-                max_zeros = len(str(max_loops))  # i.e., 2000 is 4
-                zeros_to_add = max_zeros - len(str(i)) + 1
-                # note an OoM buffer! Just to be safe
-                if zeros_to_add < 0:
-                    # ...just in case, though should never happen
-                    print('Problem allocating zeros on savefiles')
-                ilabel = '0' * zeros_to_add + str(i)
-                identifier = ilabel + '_' + str(run_ID)
-                for field in out_fields:
-                    np.savetxt(path_to_data + '/' + field + '_' +
-                               identifier + '.txt', mg.at_node[field])
-
-
-def extend_perturbed_runs(total_iters_to_reach=0):
-    """Load all perturbed runs in current folder, and extend them.
-
-    Function should be called from within an experiment folder
-    (extend all perturbations for all starting uplift rates), an
-    'uplift_rate_XXXX' folder (extend all perturbations for this rate) or an
-    'accel_XXX' folder (extend this accel only).
-
-    Does NOT create a new expt or run ID, just extends the old ones. Adds a
-    text file annotating what has happened.
-    """
-    # look for the params to use. Also tells us where we are in the hierarchy
-    level = 0  # 0: top, 1: uplift, 2: accel:
-    cwd = os.getcwd()
-    while True:
-        try:
-            paramdict = np.load('expt_ID_paramdict.npy').item()
-        except IOError:
-            os.chdir('..')
-            level += 1
-        else:
-            break
-    # now back to where we started in the dir str:
-    os.chdir(cwd)
-    if level == 2:  # in accel_ folder
-        # get the accel that this is:
-        accel_factors = [get_float_of_folder_name(), ]
-        # get the U of the host folder:
-        uplift_rates = [get_float_of_folder_name(directory=(cwd + '/..')), ]
-        wd_stub = os.path.abspath(os.getcwd() + '/../..')
-    elif level == 1:  # in uplift_ folder
-        accel_fnames = [filename for filename in os.listdir('.') if
-                        filename.startswith('accel_')]
-        accel_factors = [get_float_of_folder_name(directory=(
-            cwd + '/' + filename)) for filename in accel_fnames]
-        uplift_rates = [get_float_of_folder_name(), ]
-        wd_stub = os.path.abspath(os.getcwd() + '/..')
-    elif level == 0:  # in top folder
-        uplift_fnames = [filename for filename in os.listdir('.') if
-                         filename.startswith('uplift_rate_')]
-        uplift_rates = [get_float_of_folder_name(directory=(
-            cwd + '/' + filename)) for filename in uplift_fnames]
-        accel_factors = paramdict['accel_factors']
-        wd_stub = os.path.abspath(os.getcwd())
-
-    for uplift_rate in uplift_rates:
-        for accel_factor in accel_factors:
-            wd = (wd_stub + '/uplift_rate_' + str(uplift_rate) + '/accel_' +
-                  str(accel_factor))
-            # get the saved filenames that already exist in this folder:
-            runnames = [filename for filename in os.listdir(wd) if
-                        filename.startswith('topographic__elevation')]
-            seddepthnames = [filename for filename in os.listdir(wd) if
-                             filename.startswith('channel_sediment__depth')]
-            # as elsewhere, the final entry is the last run, so --
-            # establish the loop number of that run:
-            run_ID = runnames[-1][-14:-4]  # is a str
-            _format = 0
-            while True:
-                char = runnames[-1][-16 - _format]
-                try:
-                    num = int(char)
-                except ValueError:  # was a str
-                    break
-                else:
-                    _format += 1
-            finaliter = int(runnames[-1][(-15 - _format):-15])
-            finalsediter = int(seddepthnames[-1][(-15 - _format):-15])
-            assert finaliter == finalsediter  # ...just in case
-
-            # test we need to actually do more runs:
-            if total_iters_to_reach < finaliter + paramdict['out_interval']:
-                continue
-
-            # check we aren't going to have a "zero problem"; correct if we do
-            max_zeros = len(str(total_iters_to_reach))
-            if max_zeros + 1 > _format:  # less won't be possible from continue
-                extra_zeros = max_zeros + 1 - _format
-                for allfile in os.listdir(wd):
-                    if allfile[-14:-4] == run_ID:
-                        os.rename(wd + '/' + allfile, (
-                            wd + '/' + allfile[:(-15 - _format)] +
-                            '0'*extra_zeros + allfile[(-15-_format):]))
-                runnames = [filename for filename in os.listdir(wd) if
-                            filename.startswith('topographic__elevation')]
-                seddepthnames = [filename for filename in os.listdir(wd) if
-                                 filename.startswith(
-                                    'channel_sediment__depth')]
-            if max_zeros + 1 < _format:
-                max_zeros = _format - 1  # in case of any bonus 0s from old run
-
-            # build the structures:
-            mg = RasterModelGrid(paramdict['shape'], paramdict['dx'])
-            for edge in (mg.nodes_at_left_edge, mg.nodes_at_top_edge,
-                         mg.nodes_at_right_edge):
-                mg.status_at_node[edge] = CLOSED_BOUNDARY
-
-            z = mg.add_zeros('node', 'topographic__elevation')
-            seddepth = mg.add_zeros('node', 'channel_sediment__depth')
-            fr = FlowRouter(mg)
-            eroder = SedDepEroder(mg, **paramdict)
-            ld = LinearDiffuser(mg, **paramdict)
-
-            # load the last available elev data:
-            z[:] = np.loadtxt(wd + '/' + runnames[-1])
-            seddepth[:] = np.loadtxt(wd + '/' + seddepthnames[-1])
-
-            # save a note
-            try:
-                appendfile = open(wd + '/appended_run_readme.txt', 'a')
-            except IOError:
-                appendfile = open(wd + '/appended_run_readme.txt', 'w')
-            appendfile.write(
-                'This run was appended at timestamp ' + str(int(time.time())) +
-                '.\n')
-            appendfile.write(
-                'New loops were added from iteration ' + str(finaliter) +
-                ' and terminated at iteration ' + str(total_iters_to_reach) +
-                '.\n\n')
-            appendfile.close()
-
-            # get runnin'
-            print('Extending uplift ' + str(uplift_rate) + ' accel ' +
-                  str(accel_factor) + ' from iter number ' + str(finaliter))
-            dt = paramdict['dt']
-            for i in xrange(finaliter + 1, total_iters_to_reach):
-                fr.route_flow()
-                eroder.run_one_step(dt)
-                ld.run_one_step(dt)
-                z[mg.core_nodes] += accel_factor * uplift_rate * dt
-                print(i)
-                if i % out_interval == 0:
-                    zeros_to_add = max_zeros - len(str(i)) + 1
-                    # note an OoM buffer! Just to be safe
-                    if zeros_to_add < 0:
-                        # ...just in case, though should never happen
-                        print('Problem allocating zeros on savefiles')
-                    ilabel = '0' * zeros_to_add + str(i)
-                    identifier = ilabel + '_' + str(run_ID)
-                    for field in out_fields:
-                        np.savetxt(wd + '/' + field + '_' +
-                                   identifier + '.txt', mg.at_node[field])
 
 
 def get_float_of_folder_name(directory='.'):
@@ -777,22 +575,3 @@ def plot_and_calc_concavities_final_run(directory='.'):
     ylabel('Slope (m/m)')
 
     return k_s, -concavity
-
-
-# os.chdir('170622_17.54.54/uplift_rate_0.0001')
-# os.chdir('accel_2.0')
-# plot_sed_out(dt=200., accel_for_normalization=2.)
-# os.chdir('../accel_5.0')
-# plot_sed_out(dt=200., accel_for_normalization=5.)
-# os.chdir('../accel_10.0')
-# plot_sed_out(dt=200., accel_for_normalization=10.)
-# os.chdir('../accel_20.0')
-# plot_sed_out(dt=200., accel_for_normalization=20.)
-# os.chdir('../../..')
-# show()
-
-# for root, dirs, files in os.walk(path):
-#     files = [f for f in files if not f[0] == '.']
-#     dirs[:] = [d for d in dirs if not d[0] == '.']
-#     print files
-##run_fresh_perturbations()
