@@ -109,7 +109,8 @@ def search_for_starting_file(dict_of_all_params, uplift_rate, directory='.',
             assert len(files) == 1
             # load the dict; check it's valid
             dicts_are_the_same = True
-            found_params = np.load(root + '/expt_ID_paramdict.npy').item()
+            found_params = np.load(root + '/expt_ID_paramdict.npy',
+                                   allow_pickle=True).item()
             for key in dict_of_all_params.keys():
                 if key in ['expt_ID', 'out_interval', 'uplift_rates',
                            'accel_factors', 'forbid_deposition']:
@@ -205,7 +206,7 @@ def run_fresh_perturbations():
             # use time as a unique identifier:
             run_ID = int(time.time())
             # this is a baseline run, so extend the time for run:
-            for i in xrange(multiplierforstab*max_loops):
+            for i in range(multiplierforstab*max_loops):
                 z_pre = z.copy()
                 fr.route_flow()
                 ld.run_one_step(dt)
@@ -256,7 +257,7 @@ def run_fresh_perturbations():
             path_to_data = (expt_ID + '/uplift_rate_' + str(uplift_rate) +
                             '/accel_' + str(accel_factor))
             os.mkdir(path_to_data)
-            for i in xrange(max_loops):
+            for i in range(max_loops):
                 fr.route_flow()
                 ld.run_one_step(dt)
                 eroder.run_one_step(dt)
@@ -305,7 +306,7 @@ def draw_profile_evolution(start, stop, step, format, directory='.',
     z2 = mg2.add_zeros('node', 'topographic__elevation', noclobber=False)
     fr2 = FlowRouter(mg2)
     first = True
-    for i in xrange(start, stop, step):
+    for i in range(start, stop, step):
         num_zeros = format - len(str(i))
         numberstr = '0'*num_zeros + str(i) + '_'
         # search for this string as a topo:
@@ -400,7 +401,8 @@ def extend_equilibrium_run(uplift_rates_to_extend):
             continue  # no initfile
         init_path, init_fname = os.path.split(initfile)
         # grab that old paramdict again:
-        found_params = np.load(init_path + '/../expt_ID_paramdict.npy').item()
+        found_params = np.load(init_path + '/../expt_ID_paramdict.npy',
+                               allow_pickle=True).item()
         old_interval = found_params['out_interval']
         if out_interval < old_interval:
             print("U = " + str(uplift_rate) + ": New out_interval must " +
@@ -422,7 +424,7 @@ def extend_equilibrium_run(uplift_rates_to_extend):
         old_numchars = len(str(old_iters)) + 1
         new_numchars = len(str(max_loops)) + 1
         for field in out_fields:
-            for j in xrange(0, old_iters, multiples):
+            for j in range(0, old_iters, multiples):
                 old_num_zeros = old_numchars - len(str(i))
                 new_num_zeros = new_numchars - len(str(i))
                 fname_list = [f for f in os.listdir(init_path) if f.startswith(
@@ -444,7 +446,7 @@ def extend_equilibrium_run(uplift_rates_to_extend):
             newdir + '/topographic__elevation_' + '0'*new_num_zeros + str(j) +
             '_' + str(run_ID) + '.txt')
         path_to_data = newdir
-        for i in xrange(j, max_loops):
+        for i in range(j, max_loops):
             fr.route_flow()
             eroder.run_one_step(dt)
             ld.run_one_step(dt)
@@ -480,7 +482,8 @@ def extend_perturbed_runs(total_iters_to_reach=0):
     cwd = os.getcwd()
     while True:
         try:
-            paramdict = np.load('expt_ID_paramdict.npy').item()
+            paramdict = np.load('expt_ID_paramdict.npy',
+                                allow_pickle=True).item()
         except IOError:
             os.chdir('..')
             level += 1
@@ -589,7 +592,7 @@ def extend_perturbed_runs(total_iters_to_reach=0):
             print('Extending uplift ' + str(uplift_rate) + ' accel ' +
                   str(accel_factor) + ' from iter number ' + str(finaliter))
             dt = paramdict['dt']
-            for i in xrange(finaliter + 1, total_iters_to_reach):
+            for i in range(finaliter + 1, total_iters_to_reach):
                 fr.route_flow()
                 eroder.run_one_step(dt)
                 ld.run_one_step(dt)
@@ -716,10 +719,11 @@ def plot_sed_out(directory='.', step=1, dt=1., method='at_a_fixed_point',
 
 
 def read_and_print_file_for_inputs(directory='.', print_file=False):
-    total_dict = np.load(directory + '/expt_ID_paramdict.npy').item()
+    total_dict = np.load(directory + '/expt_ID_paramdict.npy',
+                         allow_pickle=True).item()
     if print_file:
         outfile = open(directory + '/expt_ID_params.txt', 'w')
-        for key, value in total_dict.iteritems():
+        for key, value in total_dict.items():
             outfile.write(str(key) + ': ' + str(value) + '\n')
         outfile.close()
     return total_dict
